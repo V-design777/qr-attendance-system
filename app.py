@@ -86,7 +86,6 @@ def append_attendance(new_row_df):
     """Appends attendance permanently to Google Sheets and local file"""
     new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
     
-    # Local append
     if os.path.exists("attendance.csv"):
         new_row_df.to_csv("attendance.csv", mode='a', header=False, index=False)
     else:
@@ -268,6 +267,15 @@ else:
 
     # --- TEACHER DASHBOARD ---
     elif st.session_state["role"] == "Teacher":
+        # OPTION 1: Direct link button to Google Sheet in sidebar
+        try:
+            sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        except Exception:
+            sheet_url = "https://sheets.google.com"
+
+        st.sidebar.markdown("---")
+        st.sidebar.link_button("🟢 Open Live Google Sheet", sheet_url)
+
         t_menu = st.sidebar.radio("Teacher Menu", [
             "📺 Classroom Projector (Live QR)", 
             "📊 Full Class Reports & Defaulters",
@@ -348,9 +356,10 @@ else:
             else:
                 st.info("No attendance records logged yet.")
 
+        # --- UPLOAD STUDENT ROSTER FEATURE (WITH SMART COLUMN CLEANING) ---
         elif t_menu == "📁 Upload Student Roster":
             st.subheader("📁 Upload Student List (CSV or Excel)")
-            st.caption("Upload an `.xlsx` or `.csv` file containing **RollNo** and **Name** columns to permanently update the roster.")
+            st.caption("Upload an `.xlsx` or `.csv` file containing student roll numbers and names.")
 
             uploaded_file = st.file_uploader("Choose an Excel/CSV file", type=["csv", "xlsx"])
 
@@ -361,11 +370,28 @@ else:
                     else:
                         new_df = pd.read_excel(uploaded_file)
 
+                    # 1. Strip extra spaces from column names
+                    new_df.columns = new_df.columns.astype(str).str.strip()
+
+                    # 2. Smart Column Name Mapping
+                    col_mapping = {}
+                    for col in new_df.columns:
+                        cleaned_col = col.lower().replace(" ", "").replace("_", "").replace("-", "")
+                        if cleaned_col in ["rollno", "roll", "rollnumber", "srno", "sno"]:
+                            col_mapping[col] = "RollNo"
+                        elif cleaned_col in ["name", "studentname", "student"]:
+                            col_mapping[col] = "Name"
+
+                    new_df.rename(columns=col_mapping, inplace=True)
+
+                    # 3. Check if required headers exist
                     if 'RollNo' not in new_df.columns or 'Name' not in new_df.columns:
-                        st.error("🚨 Invalid file structure! Make sure your file has exact column headers: `RollNo` and `Name`.")
+                        st.error("🚨 Could not detect Roll Number and Name columns automatically!")
+                        st.warning(f"Detected columns in your file: `{list(new_df.columns)}`")
+                        st.info("Please ensure your file has columns named 'RollNo' and 'Name'.")
                     else:
                         new_df['RollNo'] = new_df['RollNo'].astype(str)
-                        new_df = new_df[['RollNo', 'Name']]
+                        new_df = new_df[['RollNo', 'Name']].dropna()
                         
                         st.write("### Preview of Uploaded Roster:")
                         st.dataframe(new_df, use_container_width=True)
