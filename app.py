@@ -5,7 +5,11 @@ import hashlib
 import time
 import os
 from datetime import datetime
+import zoneinfo
 from streamlit_gsheets import GSheetsConnection
+
+# --- TIMEZONE CONFIGURATION (IST) ---
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
@@ -26,16 +30,12 @@ SUBJECTS = [
     "Practical - Introduction to Python Programming"
 ]
 
-# --- TEMPORARY DEBUG CONNECTION ---
+# --- GOOGLE SHEETS & LOCAL DATA HANDLING ---
+@st.cache_resource
 def get_connection():
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        # Try a test read to verify credentials
-        conn.read(worksheet="Students", ttl=0)
-        st.sidebar.success("🟢 Connected to Google Sheets!")
-        return conn
-    except Exception as e:
-        st.sidebar.error(f"🔴 Google Sheets Error: {e}")
+        return st.connection("gsheets", type=GSheetsConnection)
+    except Exception:
         return None
 
 conn = get_connection()
@@ -204,8 +204,10 @@ else:
                     submit = st.form_submit_button("✅ Submit Attendance")
 
                 if submit:
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    current_time = datetime.now().strftime("%H:%M:%S")
+                    # IST Timezone Fetching
+                    now_ist = datetime.now(IST)
+                    today = now_ist.strftime("%Y-%m-%d")
+                    current_time = now_ist.strftime("%H:%M:%S")
 
                     df_att = load_attendance()
 
@@ -227,7 +229,7 @@ else:
                             "Status": "Present"
                         }])
                         append_attendance(new_entry)
-                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time}! (Saved Permanently)")
+                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time} (IST)! (Saved Permanently)")
                         st.balloons()
 
         elif menu == "📊 My Monthly Attendance %":
@@ -271,7 +273,6 @@ else:
 
     # --- TEACHER DASHBOARD ---
     elif st.session_state["role"] == "Teacher":
-        # OPTION 1: Direct link button to Google Sheet in sidebar
         try:
             sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         except Exception:
@@ -348,19 +349,17 @@ else:
                 else:
                     st.success("🎉 All students meet or exceed the 75% attendance criteria!")
 
-                # Backup download button
                 st.write("---")
                 csv_data = df_att.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📥 Download Full Attendance Excel/CSV Backup",
                     data=csv_data,
-                    file_name=f"attendance_backup_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                    file_name=f"attendance_backup_{datetime.now(IST).strftime('%Y-%m-%d')}.csv",
                     mime="text/csv"
                 )
             else:
                 st.info("No attendance records logged yet.")
 
-        # --- UPLOAD STUDENT ROSTER FEATURE (WITH SMART COLUMN CLEANING) ---
         elif t_menu == "📁 Upload Student Roster":
             st.subheader("📁 Upload Student List (CSV or Excel)")
             st.caption("Upload an `.xlsx` or `.csv` file containing student roll numbers and names.")
@@ -374,10 +373,8 @@ else:
                     else:
                         new_df = pd.read_excel(uploaded_file)
 
-                    # 1. Strip extra spaces from column names
                     new_df.columns = new_df.columns.astype(str).str.strip()
 
-                    # 2. Smart Column Name Mapping
                     col_mapping = {}
                     for col in new_df.columns:
                         cleaned_col = col.lower().replace(" ", "").replace("_", "").replace("-", "")
@@ -388,7 +385,6 @@ else:
 
                     new_df.rename(columns=col_mapping, inplace=True)
 
-                    # 3. Check if required headers exist
                     if 'RollNo' not in new_df.columns or 'Name' not in new_df.columns:
                         st.error("🚨 Could not detect Roll Number and Name columns automatically!")
                         st.warning(f"Detected columns in your file: `{list(new_df.columns)}`")
