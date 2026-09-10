@@ -12,12 +12,17 @@ from streamlit_gsheets import GSheetsConnection
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
+st.set_page_config(
+    page_title="FYBSc AI & ML | V.G. Vaze (Kelkar) College", 
+    page_icon="🤖", 
+    layout="wide"
+)
 
-SECRET_KEY = "my_college_secure_salt"
+SECRET_KEY = "vaze_kelkar_aiml_secure_key"
 TOKEN_EXPIRY_SECONDS = 300  # 5 Minutes QR validity
 TEACHER_PASSWORD = "admin123"
 
+# --- FYBSc AI & ML SUBJECT ROSTER ---
 SUBJECTS = [
     "Database Management System",
     "Indian Knowledge System",
@@ -56,7 +61,7 @@ def load_students():
         df = pd.read_csv("students.csv")
         df['RollNo'] = df['RollNo'].astype(str)
         return df
-    return pd.DataFrame([{"RollNo": "101", "Name": "Aarav Sharma"}])
+    return pd.DataFrame([{"RollNo": "101", "Name": "Sample Student"}])
 
 def save_students(df_new):
     """Saves student list permanently to Google Sheets and local backup"""
@@ -136,19 +141,23 @@ if "logged_in" not in st.session_state:
     st.session_state["student_roll"] = None
     st.session_state["student_name"] = None
 
-st.title("🎓 Smart Attendance Portal")
+# --- BRANDING HEADER ---
+st.title("🤖 V.G. Vaze (Kelkar) College")
+st.caption("Department of Artificial Intelligence & Machine Learning — FYBSc Smart Attendance System")
+st.write("---")
+
 url_token = st.query_params.get("token", None)
 
 # --- 1. LOGIN SCREEN ---
 if not st.session_state["logged_in"]:
-    st.subheader("🔑 Please Log In")
+    st.subheader("🔑 Access Portal")
     role = st.radio("Select Login Type:", ["Student", "Teacher"], horizontal=True)
 
     if role == "Student":
         df_students = load_students()
         roll_list = df_students["RollNo"].unique().tolist()
         
-        selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
+        selected_roll = st.selectbox("Select Your Roll Number (FYBSc AI & ML):", roll_list)
         student_info = df_students[df_students["RollNo"] == selected_roll]
         
         if not student_info.empty:
@@ -162,8 +171,8 @@ if not st.session_state["logged_in"]:
             st.rerun()
 
     elif role == "Teacher":
-        password = st.text_input("Enter Teacher Password:", type="password")
-        if st.button("Log In as Teacher"):
+        password = st.text_input("Enter Faculty Password:", type="password")
+        if st.button("Log In as Faculty"):
             if password == TEACHER_PASSWORD:
                 st.session_state["logged_in"] = True
                 st.session_state["role"] = "Teacher"
@@ -174,6 +183,8 @@ if not st.session_state["logged_in"]:
 
 # --- 2. LOGGED IN PORTAL ---
 else:
+    st.sidebar.title("🏫 Kelkar College Portal")
+    st.sidebar.markdown("**Class:** FYBSc AI & ML")
     st.sidebar.markdown(f"**Logged in as:** {st.session_state['role']}")
     if st.session_state["role"] == "Student":
         st.sidebar.markdown(f"**Name:** {st.session_state['student_name']}")
@@ -195,7 +206,7 @@ else:
 
             if not url_token or not verify_token(url_token):
                 st.error("🚨 INVALID OR EXPIRED QR CODE!")
-                st.warning("This QR code has expired (valid for 5 minutes). Scan the active code on the classroom projector.")
+                st.warning("This QR code has expired (valid for 5 minutes). Scan the active QR code projected on the classroom board.")
             else:
                 st.success("✅ QR Session Verified (5-Min Window Active)!")
                 
@@ -204,7 +215,6 @@ else:
                     submit = st.form_submit_button("✅ Submit Attendance")
 
                 if submit:
-                    # IST Timezone Fetching
                     now_ist = datetime.now(IST)
                     today = now_ist.strftime("%Y-%m-%d")
                     current_time = now_ist.strftime("%H:%M:%S")
@@ -233,7 +243,7 @@ else:
                         st.balloons()
 
         elif menu == "📊 My Monthly Attendance %":
-            st.subheader(f"Attendance Report: {st.session_state['student_name']} (Roll: {st.session_state['student_roll']})")
+            st.subheader(f"FYBSc AI & ML Report: {st.session_state['student_name']} (Roll: {st.session_state['student_roll']})")
             
             df_att = load_attendance()
             if not df_att.empty:
@@ -281,7 +291,7 @@ else:
         st.sidebar.markdown("---")
         st.sidebar.link_button("🟢 Open Live Google Sheet", sheet_url)
 
-        t_menu = st.sidebar.radio("Teacher Menu", [
+        t_menu = st.sidebar.radio("Faculty Menu", [
             "📺 Classroom Projector (Live QR)", 
             "📊 Full Class Reports & Defaulters",
             "📁 Upload Student Roster"
@@ -310,7 +320,7 @@ else:
             
             with col2:
                 st.markdown(f"""
-                ### ⏱️ 5-Minute Timed Session
+                ### ⏱️ 5-Minute Timed Session (FYBSc AI & ML)
                 * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
                 * **Active Link:** `{dynamic_url}`
                 * **Anti-Proxy Rule:** Screenshots shared after 5 minutes will be rejected automatically.
@@ -320,7 +330,7 @@ else:
                     st.rerun()
 
         elif t_menu == "📊 Full Class Reports & Defaulters":
-            st.subheader("👨‍🏫 Teacher Analytics & Defaulters (<75%)")
+            st.subheader("👨‍🏫 Faculty Analytics & Defaulters (<75%)")
             
             df_att = load_attendance()
             df_curr_students = load_students()
@@ -342,7 +352,7 @@ else:
 
                 defaulters = report[report['Attendance %'] < 75]
                 st.write("---")
-                st.subheader("🚨 Defaulter List (<75%)")
+                st.subheader("🚨 FYBSc AI & ML Defaulter List (<75%)")
                 if not defaulters.empty:
                     st.error(f"Found {len(defaulters)} defaulter student(s):")
                     st.table(defaulters[['RollNo', 'Name', 'Attended', 'Attendance %']])
@@ -354,14 +364,14 @@ else:
                 st.download_button(
                     label="📥 Download Full Attendance Excel/CSV Backup",
                     data=csv_data,
-                    file_name=f"attendance_backup_{datetime.now(IST).strftime('%Y-%m-%d')}.csv",
+                    file_name=f"fybsc_aiml_attendance_{datetime.now(IST).strftime('%Y-%m-%d')}.csv",
                     mime="text/csv"
                 )
             else:
                 st.info("No attendance records logged yet.")
 
         elif t_menu == "📁 Upload Student Roster":
-            st.subheader("📁 Upload Student List (CSV or Excel)")
+            st.subheader("📁 Upload FYBSc AI & ML Roster (CSV or Excel)")
             st.caption("Upload an `.xlsx` or `.csv` file containing student roll numbers and names.")
 
             uploaded_file = st.file_uploader("Choose an Excel/CSV file", type=["csv", "xlsx"])
@@ -406,6 +416,6 @@ else:
                     st.error(f"Error reading file: {e}")
 
             st.write("---")
-            st.subheader("📋 Currently Active Student Roster")
+            st.subheader("📋 Currently Active FYBSc AI & ML Student Roster")
             df_curr = load_students()
             st.dataframe(df_curr, use_container_width=True)
