@@ -26,12 +26,16 @@ SUBJECTS = [
     "Practical - Introduction to Python Programming"
 ]
 
-# --- GOOGLE SHEETS & LOCAL DATA HANDLING ---
-@st.cache_resource
+# --- TEMPORARY DEBUG CONNECTION ---
 def get_connection():
     try:
-        return st.connection("gsheets", type=GSheetsConnection)
-    except Exception:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # Try a test read to verify credentials
+        conn.read(worksheet="Students", ttl=0)
+        st.sidebar.success("🟢 Connected to Google Sheets!")
+        return conn
+    except Exception as e:
+        st.sidebar.error(f"🔴 Google Sheets Error: {e}")
         return None
 
 conn = get_connection()
