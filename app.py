@@ -5,16 +5,13 @@ import hashlib
 import time
 import os
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
 
-STUDENTS_FILE = "students.csv"
-ATTENDANCE_FILE = "attendance.csv"
 SECRET_KEY = "my_college_secure_salt"
-
-# ⏱️ UPDATED: Token valid for 5 Minutes (300 Seconds)
-TOKEN_EXPIRY_SECONDS = 300  
+TOKEN_EXPIRY_SECONDS = 300  # 5 Minutes QR validity
 TEACHER_PASSWORD = "admin123"
 
 SUBJECTS = [
@@ -29,21 +26,80 @@ SUBJECTS = [
     "Practical - Introduction to Python Programming"
 ]
 
-# --- FILE INITIALIZATION ---
-if not os.path.exists(STUDENTS_FILE):
-    df_init = pd.DataFrame([
-        {"RollNo": "101", "Name": "Aarav Sharma"},
-        {"RollNo": "102", "Name": "Ananya Verma"},
-        {"RollNo": "103", "Name": "Rohan Mehta"}
-    ])
-    df_init.to_csv(STUDENTS_FILE, index=False)
+# --- GOOGLE SHEETS & LOCAL DATA HANDLING ---
+@st.cache_resource
+def get_connection():
+    try:
+        return st.connection("gsheets", type=GSheetsConnection)
+    except Exception:
+        return None
 
-if not os.path.exists(ATTENDANCE_FILE):
-    df_att = pd.DataFrame(columns=["Date", "Time", "Subject", "RollNo", "Name", "Status"])
-    df_att.to_csv(ATTENDANCE_FILE, index=False)
+conn = get_connection()
 
-df_students = pd.read_csv(STUDENTS_FILE)
-df_students['RollNo'] = df_students['RollNo'].astype(str)
+def load_students():
+    """Loads students permanently from Google Sheets or local file"""
+    if conn:
+        try:
+            df = conn.read(worksheet="Students", ttl=0)
+            if not df.empty and 'RollNo' in df.columns:
+                df['RollNo'] = df['RollNo'].astype(str)
+                return df
+        except Exception:
+            pass
+    
+    # Fallback to local CSV
+    if os.path.exists("students.csv"):
+        df = pd.read_csv("students.csv")
+        df['RollNo'] = df['RollNo'].astype(str)
+        return df
+    return pd.DataFrame([{"RollNo": "101", "Name": "Aarav Sharma"}])
+
+def save_students(df_new):
+    """Saves student list permanently to Google Sheets and local backup"""
+    df_new['RollNo'] = df_new['RollNo'].astype(str)
+    df_new.to_csv("students.csv", index=False)
+    if conn:
+        try:
+            conn.update(worksheet="Students", data=df_new)
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Error syncing with Google Sheets: {e}")
+
+def load_attendance():
+    """Loads attendance entries permanently"""
+    if conn:
+        try:
+            df = conn.read(worksheet="Attendance", ttl=0)
+            if not df.empty:
+                df['RollNo'] = df['RollNo'].astype(str)
+                return df
+        except Exception:
+            pass
+    
+    if os.path.exists("attendance.csv"):
+        df = pd.read_csv("attendance.csv")
+        df['RollNo'] = df['RollNo'].astype(str)
+        return df
+    return pd.DataFrame(columns=["Date", "Time", "Subject", "RollNo", "Name", "Status"])
+
+def append_attendance(new_row_df):
+    """Appends attendance permanently to Google Sheets and local file"""
+    new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
+    
+    # Local append
+    if os.path.exists("attendance.csv"):
+        new_row_df.to_csv("attendance.csv", mode='a', header=False, index=False)
+    else:
+        new_row_df.to_csv("attendance.csv", index=False)
+        
+    if conn:
+        try:
+            existing = load_attendance()
+            updated_df = pd.concat([existing, new_row_df], ignore_index=True)
+            conn.update(worksheet="Attendance", data=updated_df)
+            st.cache_data.clear()
+        except Exception as e:
+            st.warning(f"Saved locally, but Google Sheets sync pending: {e}")
 
 # --- HELPER FUNCTIONS ---
 def get_current_token(time_step=TOKEN_EXPIRY_SECONDS):
@@ -53,7 +109,6 @@ def get_current_token(time_step=TOKEN_EXPIRY_SECONDS):
 
 def verify_token(scanned_token, time_step=TOKEN_EXPIRY_SECONDS):
     current_slot = int(time.time() // time_step)
-    # Allows current 5-min window and previous 5-min window for slight clock differences
     valid_tokens = [
         hashlib.md5(f"{SECRET_KEY}_{current_slot}".encode()).hexdigest()[:8],
         hashlib.md5(f"{SECRET_KEY}_{current_slot - 1}".encode()).hexdigest()[:8]
@@ -71,7 +126,7 @@ def get_public_url():
         pass
     return "http://localhost:8501"
 
-# --- SESSION STATE FOR LOGIN ---
+# --- SESSION STATE ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
     st.session_state["role"] = None
@@ -87,7 +142,9 @@ if not st.session_state["logged_in"]:
     role = st.radio("Select Login Type:", ["Student", "Teacher"], horizontal=True)
 
     if role == "Student":
+        df_students = load_students()
         roll_list = df_students["RollNo"].unique().tolist()
+        
         selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
         student_info = df_students[df_students["RollNo"] == selected_roll]
         
@@ -147,8 +204,7 @@ else:
                     today = datetime.now().strftime("%Y-%m-%d")
                     current_time = datetime.now().strftime("%H:%M:%S")
 
-                    df_att = pd.read_csv(ATTENDANCE_FILE)
-                    df_att['RollNo'] = df_att['RollNo'].astype(str)
+                    df_att = load_attendance()
 
                     existing = df_att[
                         (df_att['Date'] == today) & 
@@ -167,16 +223,15 @@ else:
                             "Name": st.session_state['student_name'],
                             "Status": "Present"
                         }])
-                        new_entry.to_csv(ATTENDANCE_FILE, mode='a', header=False, index=False)
-                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time}!")
+                        append_attendance(new_entry)
+                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time}! (Saved Permanently)")
                         st.balloons()
 
         elif menu == "📊 My Monthly Attendance %":
             st.subheader(f"Attendance Report: {st.session_state['student_name']} (Roll: {st.session_state['student_roll']})")
             
-            df_att = pd.read_csv(ATTENDANCE_FILE)
+            df_att = load_attendance()
             if not df_att.empty:
-                df_att['RollNo'] = df_att['RollNo'].astype(str)
                 df_att['Date'] = pd.to_datetime(df_att['Date'])
                 
                 my_records = df_att[df_att['RollNo'] == st.session_state['student_roll']].copy()
@@ -213,7 +268,11 @@ else:
 
     # --- TEACHER DASHBOARD ---
     elif st.session_state["role"] == "Teacher":
-        t_menu = st.sidebar.radio("Teacher Menu", ["📺 Classroom Projector (Live QR)", "📊 Full Class Reports & Defaulters"])
+        t_menu = st.sidebar.radio("Teacher Menu", [
+            "📺 Classroom Projector (Live QR)", 
+            "📊 Full Class Reports & Defaulters",
+            "📁 Upload Student Roster"
+        ])
 
         if t_menu == "📺 Classroom Projector (Live QR)":
             st.subheader("📺 Classroom Projector Display")
@@ -223,12 +282,10 @@ else:
             current_token = get_current_token()
             dynamic_url = f"{base_url}/?token={current_token}"
 
-            # Calculate remaining time in current 5-minute window
             seconds_remaining = TOKEN_EXPIRY_SECONDS - (int(time.time()) % TOKEN_EXPIRY_SECONDS)
             mins_left = seconds_remaining // 60
             secs_left = seconds_remaining % 60
 
-            # Generate QR image
             qr = qrcode.QRCode(box_size=10, border=3)
             qr.add_data(dynamic_url)
             qr.make(fit=True)
@@ -252,9 +309,10 @@ else:
         elif t_menu == "📊 Full Class Reports & Defaulters":
             st.subheader("👨‍🏫 Teacher Analytics & Defaulters (<75%)")
             
-            df_att = pd.read_csv(ATTENDANCE_FILE)
+            df_att = load_attendance()
+            df_curr_students = load_students()
+
             if not df_att.empty:
-                df_att['RollNo'] = df_att['RollNo'].astype(str)
                 selected_subject = st.selectbox("Select Subject:", SUBJECTS)
                 total_conducted = st.number_input(f"Total Conducted Lectures for '{selected_subject}':", min_value=1, value=10)
 
@@ -263,7 +321,7 @@ else:
                 counts.columns = ['RollNo', 'Attended']
                 counts['RollNo'] = counts['RollNo'].astype(str)
 
-                report = pd.merge(df_students, counts, on='RollNo', how='left').fillna(0)
+                report = pd.merge(df_curr_students, counts, on='RollNo', how='left').fillna(0)
                 report['Attendance %'] = round((report['Attended'] / total_conducted) * 100, 1)
                 report['Status'] = report['Attendance %'].apply(lambda x: "🚨 DEFAULTER" if x < 75 else "✅ Regular")
 
@@ -277,5 +335,51 @@ else:
                     st.table(defaulters[['RollNo', 'Name', 'Attended', 'Attendance %']])
                 else:
                     st.success("🎉 All students meet or exceed the 75% attendance criteria!")
+
+                # Backup download button
+                st.write("---")
+                csv_data = df_att.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Full Attendance Excel/CSV Backup",
+                    data=csv_data,
+                    file_name=f"attendance_backup_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                    mime="text/csv"
+                )
             else:
                 st.info("No attendance records logged yet.")
+
+        elif t_menu == "📁 Upload Student Roster":
+            st.subheader("📁 Upload Student List (CSV or Excel)")
+            st.caption("Upload an `.xlsx` or `.csv` file containing **RollNo** and **Name** columns to permanently update the roster.")
+
+            uploaded_file = st.file_uploader("Choose an Excel/CSV file", type=["csv", "xlsx"])
+
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        new_df = pd.read_csv(uploaded_file)
+                    else:
+                        new_df = pd.read_excel(uploaded_file)
+
+                    if 'RollNo' not in new_df.columns or 'Name' not in new_df.columns:
+                        st.error("🚨 Invalid file structure! Make sure your file has exact column headers: `RollNo` and `Name`.")
+                    else:
+                        new_df['RollNo'] = new_df['RollNo'].astype(str)
+                        new_df = new_df[['RollNo', 'Name']]
+                        
+                        st.write("### Preview of Uploaded Roster:")
+                        st.dataframe(new_df, use_container_width=True)
+
+                        if st.button("💾 Permanently Save Student List"):
+                            save_students(new_df)
+                            st.success(f"🎉 Successfully saved {len(new_df)} students permanently to Google Sheets!")
+                            time.sleep(1)
+                            st.rerun()
+
+                except Exception as e:
+                    st.error(f"Error reading file: {e}")
+
+            st.write("---")
+            st.subheader("📋 Currently Active Student Roster")
+            df_curr = load_students()
+            st.dataframe(df_curr, use_container_width=True)
