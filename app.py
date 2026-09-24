@@ -348,18 +348,61 @@ else:
                 counts.columns = ['RollNo', 'Attended']
                 counts['RollNo'] = counts['RollNo'].astype(str)
 
+                # Merge student roster with attendance counts
                 report = pd.merge(df_curr_students, counts, on='RollNo', how='left').fillna(0)
+                report['Attended'] = report['Attended'].astype(int)
+                report['Absent'] = (total_conducted - report['Attended']).clip(lower=0).astype(int)
                 report['Attendance %'] = round((report['Attended'] / total_conducted) * 100, 1)
                 report['Status'] = report['Attendance %'].apply(lambda x: "🚨 DEFAULTER" if x < 75 else "✅ Regular")
 
-                st.dataframe(report[['RollNo', 'Name', 'Attended', 'Attendance %', 'Status']], use_container_width=True)
+                st.markdown("### 📈 Overall Subject Summary Table")
+                st.dataframe(
+                    report[['RollNo', 'Name', 'Attended', 'Absent', 'Attendance %', 'Status']], 
+                    use_container_width=True
+                )
 
-                defaulters = report[report['Attendance %'] < 75]
+                # --- DAILY DATE-WISE ATTENDANCE & ABSENTEE BREAKDOWN ---
                 st.write("---")
+                st.subheader(f"📅 Daily Attendance & Absentee List ({selected_subject})")
+                unique_dates = sorted(df_att['Date'].unique().tolist(), reverse=True)
+
+                if unique_dates:
+                    selected_date = st.selectbox("Select Lecture Date:", unique_dates)
+                    daily_att = df_att[df_att['Date'] == selected_date]
+                    present_rolls = daily_att['RollNo'].astype(str).tolist()
+
+                    df_curr_students['RollNo'] = df_curr_students['RollNo'].astype(str)
+                    
+                    # Filter Present Students
+                    present_df = daily_att[['RollNo', 'Name', 'Time']].copy()
+                    present_df['Status'] = "🟢 Present"
+
+                    # Filter Absent Students
+                    absent_df = df_curr_students[~df_curr_students['RollNo'].isin(present_rolls)].copy()
+                    absent_df['Status'] = "🔴 Absent"
+
+                    # Metrics Summary Cards
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Class Strength", len(df_curr_students))
+                    m2.metric("Present Today", len(present_df))
+                    m3.metric("Absent Today", len(absent_df))
+
+                    # Two Column Layout for Present vs Absent
+                    col_p, col_a = st.columns(2)
+                    with col_p:
+                        st.markdown(f"#### 🟢 Present ({len(present_df)})")
+                        st.dataframe(present_df[['RollNo', 'Name', 'Time', 'Status']], use_container_width=True)
+                    
+                    with col_a:
+                        st.markdown(f"#### 🔴 Absent ({len(absent_df)})")
+                        st.dataframe(absent_df[['RollNo', 'Name', 'Status']], use_container_width=True)
+
+                st.write("---")
+                defaulters = report[report['Attendance %'] < 75]
                 st.subheader(f"🚨 Defaulter List for {selected_subject} (<75%)")
                 if not defaulters.empty:
                     st.error(f"Found {len(defaulters)} defaulter student(s):")
-                    st.table(defaulters[['RollNo', 'Name', 'Attended', 'Attendance %']])
+                    st.table(defaulters[['RollNo', 'Name', 'Attended', 'Absent', 'Attendance %']])
                 else:
                     st.success("🎉 All students meet or exceed the 75% attendance criteria!")
 
