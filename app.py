@@ -12,17 +12,12 @@ from streamlit_gsheets import GSheetsConnection
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="FYBSc AI & ML | V.G. Vaze (Kelkar) College", 
-    page_icon="🤖", 
-    layout="wide"
-)
+st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
 
-SECRET_KEY = "vaze_kelkar_aiml_secure_key"
+SECRET_KEY = "my_college_secure_salt"
 TOKEN_EXPIRY_SECONDS = 300  # 5 Minutes QR validity
 TEACHER_PASSWORD = "admin123"
 
-# --- FYBSc AI & ML SUBJECT ROSTER ---
 SUBJECTS = [
     "Database Management System",
     "Indian Knowledge System",
@@ -35,7 +30,7 @@ SUBJECTS = [
     "Practical - Introduction to Python Programming"
 ]
 
-# --- GOOGLE SHEETS & LOCAL DATA HANDLING ---
+# --- GOOGLE SHEETS & DATA HANDLING ---
 @st.cache_resource
 def get_connection():
     try:
@@ -45,8 +40,12 @@ def get_connection():
 
 conn = get_connection()
 
+def sanitize_filename(name):
+    """Sanitizes subject names for local fallback CSV saving"""
+    return "".join([c if c.isalnum() else "_" for c in name])
+
 def load_students():
-    """Loads students permanently from Google Sheets or local file"""
+    """Loads student list from Google Sheets or local fallback"""
     if conn:
         try:
             df = conn.read(worksheet="Students", ttl=0)
@@ -56,12 +55,11 @@ def load_students():
         except Exception:
             pass
     
-    # Fallback to local CSV
     if os.path.exists("students.csv"):
         df = pd.read_csv("students.csv")
         df['RollNo'] = df['RollNo'].astype(str)
         return df
-    return pd.DataFrame([{"RollNo": "101", "Name": "Sample Student"}])
+    return pd.DataFrame([{"RollNo": "101", "Name": "Aarav Sharma"}])
 
 def save_students(df_new):
     """Saves student list permanently to Google Sheets and local backup"""
@@ -74,40 +72,59 @@ def save_students(df_new):
         except Exception as e:
             st.error(f"Error syncing with Google Sheets: {e}")
 
-def load_attendance():
-    """Loads attendance entries permanently"""
+def load_subject_attendance(subject_name):
+    """Loads attendance for a specific subject tab"""
     if conn:
         try:
-            df = conn.read(worksheet="Attendance", ttl=0)
-            if not df.empty:
+            df = conn.read(worksheet=subject_name, ttl=0)
+            if not df.empty and 'RollNo' in df.columns:
                 df['RollNo'] = df['RollNo'].astype(str)
                 return df
         except Exception:
             pass
     
-    if os.path.exists("attendance.csv"):
-        df = pd.read_csv("attendance.csv")
+    local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
+    if os.path.exists(local_file):
+        df = pd.read_csv(local_file)
         df['RollNo'] = df['RollNo'].astype(str)
         return df
-    return pd.DataFrame(columns=["Date", "Time", "Subject", "RollNo", "Name", "Status"])
+        
+    return pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
 
-def append_attendance(new_row_df):
-    """Appends attendance permanently to Google Sheets and local file"""
+def append_subject_attendance(subject_name, new_row_df):
+    """Appends attendance directly into the respective subject tab"""
     new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
     
-    if os.path.exists("attendance.csv"):
-        new_row_df.to_csv("attendance.csv", mode='a', header=False, index=False)
+    local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
+    if os.path.exists(local_file):
+        new_row_df.to_csv(local_file, mode='a', header=False, index=False)
     else:
-        new_row_df.to_csv("attendance.csv", index=False)
+        new_row_df.to_csv(local_file, index=False)
         
     if conn:
         try:
-            existing = load_attendance()
+            existing = load_subject_attendance(subject_name)
             updated_df = pd.concat([existing, new_row_df], ignore_index=True)
-            conn.update(worksheet="Attendance", data=updated_df)
+            conn.update(worksheet=subject_name, data=updated_df)
             st.cache_data.clear()
         except Exception as e:
-            st.warning(f"Saved locally, but Google Sheets sync pending: {e}")
+            st.warning(f"Saved locally, but Google Sheets sync pending for {subject_name}: {e}")
+
+def reset_subject_attendance(subject_name):
+    """Erases all attendance records for a specific subject tab"""
+    empty_df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
+    
+    # Overwrite local CSV backup
+    local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
+    empty_df.to_csv(local_file, index=False)
+    
+    # Overwrite Google Sheets worksheet tab
+    if conn:
+        try:
+            conn.update(worksheet=subject_name, data=empty_df)
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Error resetting Google Sheets tab '{subject_name}': {e}")
 
 # --- HELPER FUNCTIONS ---
 def get_current_token(time_step=TOKEN_EXPIRY_SECONDS):
@@ -141,23 +158,19 @@ if "logged_in" not in st.session_state:
     st.session_state["student_roll"] = None
     st.session_state["student_name"] = None
 
-# --- BRANDING HEADER ---
-st.title("🤖 V.G. Vaze (Kelkar) College")
-st.caption("Department of Artificial Intelligence & Machine Learning — FYBSc Smart Attendance System")
-st.write("---")
-
+st.title("🎓 Smart Attendance Portal")
 url_token = st.query_params.get("token", None)
 
 # --- 1. LOGIN SCREEN ---
 if not st.session_state["logged_in"]:
-    st.subheader("🔑 Access Portal")
+    st.subheader("🔑 Please Log In")
     role = st.radio("Select Login Type:", ["Student", "Teacher"], horizontal=True)
 
     if role == "Student":
         df_students = load_students()
         roll_list = df_students["RollNo"].unique().tolist()
         
-        selected_roll = st.selectbox("Select Your Roll Number (FYBSc AI & ML):", roll_list)
+        selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
         student_info = df_students[df_students["RollNo"] == selected_roll]
         
         if not student_info.empty:
@@ -171,8 +184,8 @@ if not st.session_state["logged_in"]:
             st.rerun()
 
     elif role == "Teacher":
-        password = st.text_input("Enter Faculty Password:", type="password")
-        if st.button("Log In as Faculty"):
+        password = st.text_input("Enter Teacher Password:", type="password")
+        if st.button("Log In as Teacher"):
             if password == TEACHER_PASSWORD:
                 st.session_state["logged_in"] = True
                 st.session_state["role"] = "Teacher"
@@ -183,8 +196,6 @@ if not st.session_state["logged_in"]:
 
 # --- 2. LOGGED IN PORTAL ---
 else:
-    st.sidebar.title("🏫 Kelkar College Portal")
-    st.sidebar.markdown("**Class:** FYBSc AI & ML")
     st.sidebar.markdown(f"**Logged in as:** {st.session_state['role']}")
     if st.session_state["role"] == "Student":
         st.sidebar.markdown(f"**Name:** {st.session_state['student_name']}")
@@ -206,7 +217,7 @@ else:
 
             if not url_token or not verify_token(url_token):
                 st.error("🚨 INVALID OR EXPIRED QR CODE!")
-                st.warning("This QR code has expired (valid for 5 minutes). Scan the active QR code projected on the classroom board.")
+                st.warning("This QR code has expired (valid for 5 minutes). Scan the active code on the classroom projector.")
             else:
                 st.success("✅ QR Session Verified (5-Min Window Active)!")
                 
@@ -219,11 +230,10 @@ else:
                     today = now_ist.strftime("%Y-%m-%d")
                     current_time = now_ist.strftime("%H:%M:%S")
 
-                    df_att = load_attendance()
+                    df_att = load_subject_attendance(selected_subject)
 
                     existing = df_att[
                         (df_att['Date'] == today) & 
-                        (df_att['Subject'] == selected_subject) & 
                         (df_att['RollNo'] == st.session_state['student_roll'])
                     ]
 
@@ -233,26 +243,26 @@ else:
                         new_entry = pd.DataFrame([{
                             "Date": today,
                             "Time": current_time,
-                            "Subject": selected_subject,
                             "RollNo": st.session_state['student_roll'],
                             "Name": st.session_state['student_name'],
                             "Status": "Present"
                         }])
-                        append_attendance(new_entry)
-                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time} (IST)! (Saved Permanently)")
+                        append_subject_attendance(selected_subject, new_entry)
+                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time} (IST)!")
                         st.balloons()
 
         elif menu == "📊 My Monthly Attendance %":
-            st.subheader(f"FYBSc AI & ML Report: {st.session_state['student_name']} (Roll: {st.session_state['student_roll']})")
+            st.subheader(f"Attendance Report: {st.session_state['student_name']} (Roll: {st.session_state['student_roll']})")
             
-            df_att = load_attendance()
+            selected_subject = st.selectbox("Select Subject to View Report:", SUBJECTS)
+            df_att = load_subject_attendance(selected_subject)
+            
             if not df_att.empty:
                 df_att['Date'] = pd.to_datetime(df_att['Date'])
-                
                 my_records = df_att[df_att['RollNo'] == st.session_state['student_roll']].copy()
                 
                 if my_records.empty:
-                    st.info("No attendance records found for your roll number yet.")
+                    st.info(f"No attendance records found for '{selected_subject}'.")
                 else:
                     my_records['Month'] = my_records['Date'].dt.strftime('%B %Y')
                     available_months = my_records['Month'].unique().tolist()
@@ -260,26 +270,21 @@ else:
                     selected_month = st.selectbox("Select Month:", available_months)
                     monthly_data = my_records[my_records['Month'] == selected_month]
 
-                    st.markdown(f"### Monthly Summary - {selected_month}")
+                    attended_count = len(monthly_data)
+                    conducted_count = 8 
+                    perc = round((attended_count / conducted_count) * 100, 1) if conducted_count > 0 else 0
                     
-                    report_data = []
-                    for subject in SUBJECTS:
-                        subject_records = monthly_data[monthly_data['Subject'] == subject]
-                        attended_count = len(subject_records)
-                        conducted_count = 8 
-                        perc = round((attended_count / conducted_count) * 100, 1) if conducted_count > 0 else 0
-                        
-                        report_data.append({
-                            "Subject": subject,
-                            "Lectures Attended": attended_count,
-                            "Estimated Conducted": conducted_count,
-                            "Attendance %": f"{perc}%",
-                            "Status": "✅ Regular" if perc >= 75 else "🚨 Below Target (<75%)"
-                        })
+                    report_df = pd.DataFrame([{
+                        "Subject": selected_subject,
+                        "Lectures Attended": attended_count,
+                        "Estimated Conducted": conducted_count,
+                        "Attendance %": f"{perc}%",
+                        "Status": "✅ Regular" if perc >= 75 else "🚨 Below Target (<75%)"
+                    }])
                     
-                    st.table(pd.DataFrame(report_data))
+                    st.table(report_df)
             else:
-                st.info("No attendance records exist in the system yet.")
+                st.info(f"No attendance records exist for '{selected_subject}' yet.")
 
     # --- TEACHER DASHBOARD ---
     elif st.session_state["role"] == "Teacher":
@@ -291,9 +296,9 @@ else:
         st.sidebar.markdown("---")
         st.sidebar.link_button("🟢 Open Live Google Sheet", sheet_url)
 
-        t_menu = st.sidebar.radio("Faculty Menu", [
+        t_menu = st.sidebar.radio("Teacher Menu", [
             "📺 Classroom Projector (Live QR)", 
-            "📊 Full Class Reports & Defaulters",
+            "📊 Subject Reports & Defaulters",
             "📁 Upload Student Roster"
         ])
 
@@ -320,7 +325,7 @@ else:
             
             with col2:
                 st.markdown(f"""
-                ### ⏱️ 5-Minute Timed Session (FYBSc AI & ML)
+                ### ⏱️ 5-Minute Timed Session
                 * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
                 * **Active Link:** `{dynamic_url}`
                 * **Anti-Proxy Rule:** Screenshots shared after 5 minutes will be rejected automatically.
@@ -329,18 +334,17 @@ else:
                 if st.button("🔄 Force Refresh / Generate New QR"):
                     st.rerun()
 
-        elif t_menu == "📊 Full Class Reports & Defaulters":
-            st.subheader("👨‍🏫 Faculty Analytics & Defaulters (<75%)")
+        elif t_menu == "📊 Subject Reports & Defaulters":
+            st.subheader("👨‍🏫 Subject Analytics & Defaulters (<75%)")
             
-            df_att = load_attendance()
+            selected_subject = st.selectbox("Select Subject:", SUBJECTS)
+            df_att = load_subject_attendance(selected_subject)
             df_curr_students = load_students()
 
             if not df_att.empty:
-                selected_subject = st.selectbox("Select Subject:", SUBJECTS)
                 total_conducted = st.number_input(f"Total Conducted Lectures for '{selected_subject}':", min_value=1, value=10)
 
-                subj_att = df_att[df_att['Subject'] == selected_subject]
-                counts = subj_att.groupby('RollNo')['Date'].nunique().reset_index()
+                counts = df_att.groupby('RollNo')['Date'].nunique().reset_index()
                 counts.columns = ['RollNo', 'Attended']
                 counts['RollNo'] = counts['RollNo'].astype(str)
 
@@ -352,7 +356,7 @@ else:
 
                 defaulters = report[report['Attendance %'] < 75]
                 st.write("---")
-                st.subheader("🚨 FYBSc AI & ML Defaulter List (<75%)")
+                st.subheader(f"🚨 Defaulter List for {selected_subject} (<75%)")
                 if not defaulters.empty:
                     st.error(f"Found {len(defaulters)} defaulter student(s):")
                     st.table(defaulters[['RollNo', 'Name', 'Attended', 'Attendance %']])
@@ -362,16 +366,28 @@ else:
                 st.write("---")
                 csv_data = df_att.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Download Full Attendance Excel/CSV Backup",
+                    label=f"📥 Download {selected_subject} Backup CSV",
                     data=csv_data,
-                    file_name=f"fybsc_aiml_attendance_{datetime.now(IST).strftime('%Y-%m-%d')}.csv",
+                    file_name=f"{sanitize_filename(selected_subject)}_backup_{datetime.now(IST).strftime('%Y-%m-%d')}.csv",
                     mime="text/csv"
                 )
             else:
-                st.info("No attendance records logged yet.")
+                st.info(f"No attendance records logged for '{selected_subject}' yet.")
+
+            # --- RESET ATTENDANCE DATA SECTION ---
+            st.write("---")
+            with st.expander(f"🗑️ Reset / Erase Attendance Data for {selected_subject}"):
+                st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'** from both Google Sheets and local backups.")
+                confirm_reset = st.checkbox(f"I understand that this will erase all attendance data for '{selected_subject}'")
+                
+                if st.button(f"🔥 Reset Attendance Data for {selected_subject}", disabled=not confirm_reset):
+                    reset_subject_attendance(selected_subject)
+                    st.success(f"🎉 Attendance data for '{selected_subject}' has been successfully reset!")
+                    time.sleep(1.5)
+                    st.rerun()
 
         elif t_menu == "📁 Upload Student Roster":
-            st.subheader("📁 Upload FYBSc AI & ML Roster (CSV or Excel)")
+            st.subheader("📁 Upload Student List (CSV or Excel)")
             st.caption("Upload an `.xlsx` or `.csv` file containing student roll numbers and names.")
 
             uploaded_file = st.file_uploader("Choose an Excel/CSV file", type=["csv", "xlsx"])
@@ -416,6 +432,6 @@ else:
                     st.error(f"Error reading file: {e}")
 
             st.write("---")
-            st.subheader("📋 Currently Active FYBSc AI & ML Student Roster")
+            st.subheader("📋 Currently Active Student Roster")
             df_curr = load_students()
             st.dataframe(df_curr, use_container_width=True)
