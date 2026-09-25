@@ -18,6 +18,26 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- HIDE STREAMLIT HEADER, GITHUB FORK & FOOTER ---
+hide_streamlit_style = """
+    <style>
+    /* Hide top header bar, GitHub icon, Fork button, and 3 dots */
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    
+    /* Hide footer */
+    footer {visibility: hidden;}
+    
+    /* Hide Streamlit Cloud bottom-right badges and status widgets */
+    [data-testid="stDecoration"] {display: none;}
+    [data-testid="stStatusWidget"] {display: none;}
+    .stAppDeployButton {display: none;}
+    div[class*="viewerBadge"] {display: none !important;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+# --- CONSTANTS & CONFIGURATION ---
 SECRET_KEY = "my_college_secure_salt"
 TEACHER_PASSWORD = "admin123"
 
