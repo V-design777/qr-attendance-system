@@ -33,7 +33,7 @@ SUBJECTS = [
     "Practical - Introduction to Python Programming"
 ]
 
-# --- SHARED SERVER QR CONFIGURATION (Cross-Session Sync) ---
+# --- SHARED SERVER QR CONFIGURATION ---
 @st.cache_resource
 def get_shared_qr_config():
     """Stores shared QR session parameters across all student and teacher logins."""
@@ -44,15 +44,23 @@ def get_shared_qr_config():
         "active_subject": SUBJECTS[0]
     }
 
-# --- GOOGLE SHEETS & DATA HANDLING ---
+# --- DUAL DATABASE CONNECTIONS (Supabase + Google Sheets) ---
 @st.cache_resource
-def get_connection():
+def get_gsheets_connection():
     try:
         return st.connection("gsheets", type=GSheetsConnection)
     except Exception:
         return None
 
-conn = get_connection()
+@st.cache_resource
+def get_db_connection():
+    try:
+        return st.connection("postgresql", type="sql")
+    except Exception:
+        return None
+
+conn_gsheets = get_gsheets_connection()
+conn_db = get_db_connection()
 
 def sanitize_filename(name):
     """Sanitizes subject names for local fallback CSV saving"""
@@ -60,9 +68,9 @@ def sanitize_filename(name):
 
 def load_students():
     """Loads student list from Google Sheets or local fallback"""
-    if conn:
+    if conn_gsheets:
         try:
-            df = conn.read(worksheet="Students", ttl=0)
+            df = conn_gsheets.read(worksheet="Students", ttl=0)
             if not df.empty and 'RollNo' in df.columns:
                 df['RollNo'] = df['RollNo'].astype(str)
                 return df
@@ -79,20 +87,33 @@ def save_students(df_new):
     """Saves student list permanently to Google Sheets and local backup"""
     df_new['RollNo'] = df_new['RollNo'].astype(str)
     df_new.to_csv("students.csv", index=False)
-    if conn:
+    if conn_gsheets:
         try:
-            conn.update(worksheet="Students", data=df_new)
+            conn_gsheets.update(worksheet="Students", data=df_new)
             st.cache_data.clear()
         except Exception as e:
             st.error(f"Error syncing with Google Sheets: {e}")
 
 def load_subject_attendance(subject_name):
-    """Loads attendance for a specific subject tab with strict deduplication"""
-    df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
-    
-    if conn:
+    """Loads attendance for a specific subject from Supabase or Google Sheets"""
+    # Try fetching high-speed data directly from Supabase first
+    if conn_db:
         try:
-            df_sheet = conn.read(worksheet=subject_name, ttl=0)
+            query = "SELECT date, time, roll_no AS \"RollNo\", name AS \"Name\", 'Present' AS \"Status\" FROM attendance WHERE subject = :subj"
+            df_sql = conn_db.query(query, params={"subj": subject_name}, ttl=0)
+            if not df_sql.empty:
+                df_sql['RollNo'] = df_sql['RollNo'].astype(str)
+                df_sql['Date'] = df_sql['date'].astype(str)
+                df_sql['Time'] = df_sql['time'].astype(str)
+                return df_sql[['Date', 'Time', 'RollNo', 'Name', 'Status']].drop_duplicates(subset=['Date', 'RollNo'], keep='first')
+        except Exception:
+            pass
+
+    # Backup read from Google Sheets
+    df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
+    if conn_gsheets:
+        try:
+            df_sheet = conn_gsheets.read(worksheet=subject_name, ttl=0)
             if not df_sheet.empty and 'RollNo' in df_sheet.columns:
                 df = df_sheet
         except Exception:
@@ -109,9 +130,38 @@ def load_subject_attendance(subject_name):
         
     return df
 
-def append_subject_attendance(subject_name, new_row_df):
-    """Appends attendance cleanly with zero duplicates"""
-    new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
+def save_dual_attendance(subject_name, date_str, time_str, roll_no, name):
+    """Saves attendance instantly to Supabase PostgreSQL AND Google Sheets as backup"""
+    # 1. Primary Save to Supabase (High Speed, Unlimited Scale)
+    if conn_db:
+        try:
+            insert_query = """
+                INSERT INTO attendance (date, time, roll_no, name, subject)
+                VALUES (:date, :time, :roll_no, :name, :subject)
+            """
+            with conn_db.session as session:
+                session.execute(
+                    st.text(insert_query),
+                    {
+                        "date": date_str,
+                        "time": time_str,
+                        "roll_no": str(roll_no),
+                        "name": name,
+                        "subject": subject_name
+                    }
+                )
+                session.commit()
+        except Exception as e:
+            st.warning(f"Supabase sync warning: {e}")
+
+    # 2. Secondary Save to Google Sheets & Local CSV Backup
+    new_row_df = pd.DataFrame([{
+        "Date": date_str,
+        "Time": time_str,
+        "RollNo": str(roll_no),
+        "Name": name,
+        "Status": "Present"
+    }])
     
     existing_df = load_subject_attendance(subject_name)
     combined_df = pd.concat([existing_df, new_row_df], ignore_index=True)
@@ -120,28 +170,35 @@ def append_subject_attendance(subject_name, new_row_df):
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
     combined_df.to_csv(local_file, index=False)
         
-    if conn:
+    if conn_gsheets:
         try:
-            conn.update(worksheet=subject_name, data=combined_df)
+            conn_gsheets.update(worksheet=subject_name, data=combined_df)
             st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"Saved locally, but Google Sheets sync pending for {subject_name}: {e}")
+        except Exception:
+            pass
 
 def reset_subject_attendance(subject_name):
-    """Erases all attendance records for a specific subject tab"""
+    """Erases attendance records for a specific subject from both Supabase and Google Sheets"""
+    if conn_db:
+        try:
+            with conn_db.session as session:
+                session.execute(st.text("DELETE FROM attendance WHERE subject = :subj"), {"subj": subject_name})
+                session.commit()
+        except Exception as e:
+            st.error(f"Error resetting Supabase database: {e}")
+
     empty_df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
-    
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
     empty_df.to_csv(local_file, index=False)
     
-    if conn:
+    if conn_gsheets:
         try:
-            conn.update(worksheet=subject_name, data=empty_df)
+            conn_gsheets.update(worksheet=subject_name, data=empty_df)
             st.cache_data.clear()
         except Exception as e:
             st.error(f"Error resetting Google Sheets tab '{subject_name}': {e}")
 
-# --- DYNAMIC TOKEN & SECURITY FUNCTIONS ---
+# --- TOKEN & SECURITY FUNCTIONS ---
 def get_current_token():
     cfg = get_shared_qr_config()
     validity_seconds = cfg["validity_mins"] * 60
@@ -185,7 +242,7 @@ def get_public_url():
         pass
     return "http://localhost:8501"
 
-# --- SINGLE BRANDED HEADER (Renders exactly once at top) ---
+# --- SINGLE BRANDED HEADER ---
 col_logo, col_title = st.columns([1, 5], vertical_alignment="center")
 
 with col_logo:
@@ -289,14 +346,13 @@ else:
                     if not existing.empty:
                         st.warning(f"⚠️ You have already marked attendance for '{active_subject}' today!")
                     else:
-                        new_entry = pd.DataFrame([{
-                            "Date": today,
-                            "Time": current_time,
-                            "RollNo": st.session_state['student_roll'],
-                            "Name": st.session_state['student_name'],
-                            "Status": "Present"
-                        }])
-                        append_subject_attendance(active_subject, new_entry)
+                        save_dual_attendance(
+                            subject_name=active_subject,
+                            date_str=today,
+                            time_str=current_time,
+                            roll_no=st.session_state['student_roll'],
+                            name=st.session_state['student_name']
+                        )
                         st.success(f"🎉 Marked Present for {active_subject} at {current_time} (IST)!")
                         st.balloons()
 
@@ -432,7 +488,7 @@ else:
                     * **QR Expiry Window:** `{cfg['validity_mins']} Minutes`
                     * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
                     * **Active Link:** `{dynamic_url}`
-                    * **Anti-Proxy Rule:** The QR token is cryptographically bound to **{cfg['active_subject']}**. Students cannot choose a different subject.
+                    * **Anti-Proxy Rule:** The QR token is cryptographically bound to **{cfg['active_subject']}**.
                     """)
 
         elif t_menu == "📊 Subject Reports & Defaulters":
@@ -514,7 +570,7 @@ else:
 
             st.write("---")
             with st.expander(f"🗑️ Reset / Erase Attendance Data for {selected_subject}"):
-                st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'** from both Google Sheets and local backups.")
+                st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'** from both database and backup files.")
                 confirm_reset = st.checkbox(f"I understand that this will erase all attendance data for '{selected_subject}'")
                 
                 if st.button(f"🔥 Reset Attendance Data for {selected_subject}", disabled=not confirm_reset):
@@ -561,7 +617,7 @@ else:
 
                         if st.button("💾 Permanently Save Student List"):
                             save_students(new_df)
-                            st.success(f"🎉 Successfully saved {len(new_df)} students permanently to Google Sheets!")
+                            st.success(f"🎉 Successfully saved {len(new_df)} students permanently!")
                             time.sleep(1)
                             st.rerun()
 
