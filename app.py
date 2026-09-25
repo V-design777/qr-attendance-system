@@ -15,7 +15,6 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
 
 SECRET_KEY = "my_college_secure_salt"
-TOKEN_EXPIRY_SECONDS = 300  # 5 Minutes QR validity
 TEACHER_PASSWORD = "admin123"
 
 SUBJECTS = [
@@ -29,6 +28,16 @@ SUBJECTS = [
     "Practical - Data Handling with SQL",
     "Practical - Introduction to Python Programming"
 ]
+
+# --- SHARED SERVER QR CONFIGURATION (Cross-Session Sync) ---
+@st.cache_resource
+def get_shared_qr_config():
+    """Stores shared QR session parameters across all student and teacher logins."""
+    return {
+        "salt": 1000,
+        "validity_mins": 10,  # Default 10 minutes (Teacher friendly)
+        "is_locked": False
+    }
 
 # --- GOOGLE SHEETS & DATA HANDLING ---
 @st.cache_resource
@@ -73,39 +82,47 @@ def save_students(df_new):
             st.error(f"Error syncing with Google Sheets: {e}")
 
 def load_subject_attendance(subject_name):
-    """Loads attendance for a specific subject tab"""
+    """Loads attendance for a specific subject tab with strict deduplication"""
+    df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
+    
     if conn:
         try:
-            df = conn.read(worksheet=subject_name, ttl=0)
-            if not df.empty and 'RollNo' in df.columns:
-                df['RollNo'] = df['RollNo'].astype(str)
-                return df
+            df_sheet = conn.read(worksheet=subject_name, ttl=0)
+            if not df_sheet.empty and 'RollNo' in df_sheet.columns:
+                df = df_sheet
         except Exception:
             pass
     
-    local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
-    if os.path.exists(local_file):
-        df = pd.read_csv(local_file)
+    if df.empty:
+        local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
+        if os.path.exists(local_file):
+            df = pd.read_csv(local_file)
+
+    if not df.empty and 'RollNo' in df.columns:
         df['RollNo'] = df['RollNo'].astype(str)
-        return df
+        # Deduplicate strictly on Date and RollNo
+        df = df.drop_duplicates(subset=['Date', 'RollNo'], keep='first')
         
-    return pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
+    return df
 
 def append_subject_attendance(subject_name, new_row_df):
-    """Appends attendance directly into the respective subject tab"""
+    """Appends attendance cleanly with zero duplicates"""
     new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
     
+    # Load existing attendance dataset
+    existing_df = load_subject_attendance(subject_name)
+    
+    # Merge and strictly deduplicate by Date and RollNo
+    combined_df = pd.concat([existing_df, new_row_df], ignore_index=True)
+    combined_df = combined_df.drop_duplicates(subset=['Date', 'RollNo'], keep='first')
+    
+    # Save local CSV backup
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
-    if os.path.exists(local_file):
-        new_row_df.to_csv(local_file, mode='a', header=False, index=False)
-    else:
-        new_row_df.to_csv(local_file, index=False)
+    combined_df.to_csv(local_file, index=False)
         
     if conn:
         try:
-            existing = load_subject_attendance(subject_name)
-            updated_df = pd.concat([existing, new_row_df], ignore_index=True)
-            conn.update(worksheet=subject_name, data=updated_df)
+            conn.update(worksheet=subject_name, data=combined_df)
             st.cache_data.clear()
         except Exception as e:
             st.warning(f"Saved locally, but Google Sheets sync pending for {subject_name}: {e}")
@@ -114,11 +131,9 @@ def reset_subject_attendance(subject_name):
     """Erases all attendance records for a specific subject tab"""
     empty_df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
     
-    # Overwrite local CSV backup
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
     empty_df.to_csv(local_file, index=False)
     
-    # Overwrite Google Sheets worksheet tab
     if conn:
         try:
             conn.update(worksheet=subject_name, data=empty_df)
@@ -126,19 +141,36 @@ def reset_subject_attendance(subject_name):
         except Exception as e:
             st.error(f"Error resetting Google Sheets tab '{subject_name}': {e}")
 
-# --- HELPER FUNCTIONS ---
-def get_current_token(time_step=TOKEN_EXPIRY_SECONDS):
-    current_slot = int(time.time() // time_step)
-    raw_string = f"{SECRET_KEY}_{current_slot}"
+# --- DYNAMIC TOKEN & SECURITY FUNCTIONS ---
+def get_current_token():
+    cfg = get_shared_qr_config()
+    validity_seconds = cfg["validity_mins"] * 60
+    salt = cfg["salt"]
+    current_slot = int(time.time() // validity_seconds)
+    raw_string = f"{SECRET_KEY}_{current_slot}_{salt}"
     return hashlib.md5(raw_string.encode()).hexdigest()[:8]
 
-def verify_token(scanned_token, time_step=TOKEN_EXPIRY_SECONDS):
-    current_slot = int(time.time() // time_step)
+def verify_token(scanned_token):
+    cfg = get_shared_qr_config()
+    
+    if cfg["is_locked"]:
+        return False, "🔒 Attendance session has been locked by the teacher."
+        
+    if not scanned_token:
+        return False, "🚨 No attendance token provided."
+
+    validity_seconds = cfg["validity_mins"] * 60
+    salt = cfg["salt"]
+    current_slot = int(time.time() // validity_seconds)
+    
     valid_tokens = [
-        hashlib.md5(f"{SECRET_KEY}_{current_slot}".encode()).hexdigest()[:8],
-        hashlib.md5(f"{SECRET_KEY}_{current_slot - 1}".encode()).hexdigest()[:8]
+        hashlib.md5(f"{SECRET_KEY}_{current_slot}_{salt}".encode()).hexdigest()[:8],
+        hashlib.md5(f"{SECRET_KEY}_{current_slot - 1}_{salt}".encode()).hexdigest()[:8]
     ]
-    return scanned_token in valid_tokens
+    
+    if scanned_token in valid_tokens:
+        return True, "✅ QR Session Verified!"
+    return False, "🚨 EXPIRED OR INVALID QR CODE! Scan the active code on the classroom board."
 
 def get_public_url():
     try:
@@ -215,11 +247,12 @@ else:
         if menu == "📱 Mark Attendance (QR)":
             st.subheader("Mark Daily Class Attendance")
 
-            if not url_token or not verify_token(url_token):
-                st.error("🚨 INVALID OR EXPIRED QR CODE!")
-                st.warning("This QR code has expired (valid for 5 minutes). Scan the active code on the classroom projector.")
+            is_valid, msg = verify_token(url_token)
+
+            if not is_valid:
+                st.error(msg)
             else:
-                st.success("✅ QR Session Verified (5-Min Window Active)!")
+                st.success("✅ QR Session Active & Verified!")
                 
                 with st.form("student_mark_form"):
                     selected_subject = st.selectbox("Select Subject:", SUBJECTS)
@@ -302,37 +335,75 @@ else:
             "📁 Upload Student Roster"
         ])
 
-        if t_menu == "📺 Classroom Projector (Live QR)":
+        if t_menu == "📺 Classroom Projector Display":
             st.subheader("📺 Classroom Projector Display")
-            st.caption("Project this screen on the board. The QR code automatically expires every 5 minutes.")
-
-            base_url = get_public_url()
-            current_token = get_current_token()
-            dynamic_url = f"{base_url}/?token={current_token}"
-
-            seconds_remaining = TOKEN_EXPIRY_SECONDS - (int(time.time()) % TOKEN_EXPIRY_SECONDS)
-            mins_left = seconds_remaining // 60
-            secs_left = seconds_remaining % 60
-
-            qr = qrcode.QRCode(box_size=10, border=3)
-            qr.add_data(dynamic_url)
-            qr.make(fit=True)
-            qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.image(qr_img, caption=f"Active Token: {current_token}", width=280)
             
-            with col2:
-                st.markdown(f"""
-                ### ⏱️ 5-Minute Timed Session
-                * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
-                * **Active Link:** `{dynamic_url}`
-                * **Anti-Proxy Rule:** Screenshots shared after 5 minutes will be rejected automatically.
-                """)
-                
-                if st.button("🔄 Force Refresh / Generate New QR"):
+            cfg = get_shared_qr_config()
+
+            # --- TEACHER CONTROLS ---
+            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
+            with ctrl_col1:
+                selected_validity = st.selectbox(
+                    "⏱️ QR Validity Duration:", 
+                    [3, 5, 10, 15], 
+                    index=[3, 5, 10, 15].index(cfg["validity_mins"])
+                )
+                if selected_validity != cfg["validity_mins"]:
+                    cfg["validity_mins"] = selected_validity
                     st.rerun()
+
+            with ctrl_col2:
+                st.write("")
+                st.write("")
+                if st.button("🔄 Force Refresh / Generate New QR"):
+                    cfg["salt"] += 1
+                    cfg["is_locked"] = False
+                    st.success("New QR Generated!")
+                    st.rerun()
+
+            with ctrl_col3:
+                st.write("")
+                st.write("")
+                if cfg["is_locked"]:
+                    if st.button("🔓 Unlock Attendance Session"):
+                        cfg["is_locked"] = False
+                        st.rerun()
+                else:
+                    if st.button("🔒 Lock / End Attendance Session"):
+                        cfg["is_locked"] = True
+                        st.rerun()
+
+            st.write("---")
+
+            if cfg["is_locked"]:
+                st.error("🔒 ATTENDANCE SESSION IS LOCKED. Students cannot mark attendance currently.")
+            else:
+                base_url = get_public_url()
+                current_token = get_current_token()
+                dynamic_url = f"{base_url}/?token={current_token}"
+
+                validity_seconds = cfg["validity_mins"] * 60
+                seconds_remaining = validity_seconds - (int(time.time()) % validity_seconds)
+                mins_left = seconds_remaining // 60
+                secs_left = seconds_remaining % 60
+
+                qr = qrcode.QRCode(box_size=10, border=3)
+                qr.add_data(dynamic_url)
+                qr.make(fit=True)
+                qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.image(qr_img, caption=f"Active Token: {current_token}", width=280)
+                
+                with col2:
+                    st.markdown(f"""
+                    ### ⏱️ Active Timed Session
+                    * **QR Expiry Window:** `{cfg['validity_mins']} Minutes`
+                    * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
+                    * **Active Link:** `{dynamic_url}`
+                    * **Anti-Proxy Rule:** Clicking **Force Refresh** or **Lock Session** invalidates shared screenshots instantly.
+                    """)
 
         elif t_menu == "📊 Subject Reports & Defaulters":
             st.subheader("👨‍🏫 Subject Analytics & Defaulters (<75%)")
@@ -348,7 +419,6 @@ else:
                 counts.columns = ['RollNo', 'Attended']
                 counts['RollNo'] = counts['RollNo'].astype(str)
 
-                # Merge student roster with attendance counts
                 report = pd.merge(df_curr_students, counts, on='RollNo', how='left').fillna(0)
                 report['Attended'] = report['Attended'].astype(int)
                 report['Absent'] = (total_conducted - report['Attended']).clip(lower=0).astype(int)
@@ -361,7 +431,6 @@ else:
                     use_container_width=True
                 )
 
-                # --- DAILY DATE-WISE ATTENDANCE & ABSENTEE BREAKDOWN ---
                 st.write("---")
                 st.subheader(f"📅 Daily Attendance & Absentee List ({selected_subject})")
                 unique_dates = sorted(df_att['Date'].unique().tolist(), reverse=True)
@@ -373,21 +442,17 @@ else:
 
                     df_curr_students['RollNo'] = df_curr_students['RollNo'].astype(str)
                     
-                    # Filter Present Students
                     present_df = daily_att[['RollNo', 'Name', 'Time']].copy()
                     present_df['Status'] = "🟢 Present"
 
-                    # Filter Absent Students
                     absent_df = df_curr_students[~df_curr_students['RollNo'].isin(present_rolls)].copy()
                     absent_df['Status'] = "🔴 Absent"
 
-                    # Metrics Summary Cards
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Class Strength", len(df_curr_students))
                     m2.metric("Present Today", len(present_df))
                     m3.metric("Absent Today", len(absent_df))
 
-                    # Two Column Layout for Present vs Absent
                     col_p, col_a = st.columns(2)
                     with col_p:
                         st.markdown(f"#### 🟢 Present ({len(present_df)})")
@@ -417,7 +482,6 @@ else:
             else:
                 st.info(f"No attendance records logged for '{selected_subject}' yet.")
 
-            # --- RESET ATTENDANCE DATA SECTION ---
             st.write("---")
             with st.expander(f"🗑️ Reset / Erase Attendance Data for {selected_subject}"):
                 st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'** from both Google Sheets and local backups.")
