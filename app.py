@@ -35,7 +35,7 @@ def get_shared_qr_config():
     """Stores shared QR session parameters across all student and teacher logins."""
     return {
         "salt": 1000,
-        "validity_mins": 10,  # Default 10 minutes (Teacher friendly)
+        "validity_mins": 10,  # Default 10 minutes
         "is_locked": False
     }
 
@@ -100,7 +100,6 @@ def load_subject_attendance(subject_name):
 
     if not df.empty and 'RollNo' in df.columns:
         df['RollNo'] = df['RollNo'].astype(str)
-        # Deduplicate strictly on Date and RollNo
         df = df.drop_duplicates(subset=['Date', 'RollNo'], keep='first')
         
     return df
@@ -109,14 +108,10 @@ def append_subject_attendance(subject_name, new_row_df):
     """Appends attendance cleanly with zero duplicates"""
     new_row_df['RollNo'] = new_row_df['RollNo'].astype(str)
     
-    # Load existing attendance dataset
     existing_df = load_subject_attendance(subject_name)
-    
-    # Merge and strictly deduplicate by Date and RollNo
     combined_df = pd.concat([existing_df, new_row_df], ignore_index=True)
     combined_df = combined_df.drop_duplicates(subset=['Date', 'RollNo'], keep='first')
     
-    # Save local CSV backup
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
     combined_df.to_csv(local_file, index=False)
         
@@ -335,12 +330,11 @@ else:
             "📁 Upload Student Roster"
         ])
 
-        if t_menu == "📺 Classroom Projector Display":
+        if t_menu == "📺 Classroom Projector (Live QR)":
             st.subheader("📺 Classroom Projector Display")
             
             cfg = get_shared_qr_config()
 
-            # --- TEACHER CONTROLS ---
             ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
             with ctrl_col1:
                 selected_validity = st.selectbox(
