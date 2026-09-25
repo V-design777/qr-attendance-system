@@ -18,21 +18,40 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- HIDE STREAMLIT HEADER, GITHUB FORK & FOOTER ---
+# --- HIDE STREAMLIT HEADER, GITHUB FORK & BOTTOM FLOATING BADGES ---
 hide_streamlit_style = """
     <style>
-    /* Hide top header bar, GitHub icon, Fork button, and 3 dots */
-    header {visibility: hidden;}
-    #MainMenu {visibility: hidden;}
+    /* Hide top header bar, menu, and header icons */
+    header, [data-testid="stHeader"] {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    #MainMenu {
+        visibility: hidden !important;
+        display: none !important;
+    }
     
-    /* Hide footer */
-    footer {visibility: hidden;}
+    /* Hide standard footer */
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
     
-    /* Hide Streamlit Cloud bottom-right badges and status widgets */
-    [data-testid="stDecoration"] {display: none;}
-    [data-testid="stStatusWidget"] {display: none;}
-    .stAppDeployButton {display: none;}
+    /* Hide bottom-right "Hosted with Streamlit" badge & GitHub profile avatar */
+    [data-testid="stDecoration"] {display: none !important;}
+    [data-testid="stStatusWidget"] {display: none !important;}
+    .stAppDeployButton {display: none !important;}
+    [data-testid="stAppToolbar"] {display: none !important;}
+    .stAppToolbar {display: none !important;}
+    
     div[class*="viewerBadge"] {display: none !important;}
+    div[class*="StyledViewerBadge"] {display: none !important;}
+    div[class*="viewerBadge_container"] {display: none !important;}
+    div[class*="profile"] {display: none !important;}
+    
+    /* Hide direct links to Streamlit and GitHub on page */
+    a[href*="streamlit.io"] {display: none !important;}
+    a[href*="github.com"] {display: none !important;}
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
