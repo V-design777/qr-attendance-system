@@ -4,3 +4,5 @@ qrcode
 pillow
 st-gsheets-connection
 openpyxl
+psycopg2-binary
+sqlalchemy
