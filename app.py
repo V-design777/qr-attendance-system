@@ -35,8 +35,9 @@ def get_shared_qr_config():
     """Stores shared QR session parameters across all student and teacher logins."""
     return {
         "salt": 1000,
-        "validity_mins": 10,  # Default 10 minutes
-        "is_locked": False
+        "validity_mins": 10,
+        "is_locked": False,
+        "active_subject": SUBJECTS[0]  # Default subject
     }
 
 # --- GOOGLE SHEETS & DATA HANDLING ---
@@ -141,31 +142,33 @@ def get_current_token():
     cfg = get_shared_qr_config()
     validity_seconds = cfg["validity_mins"] * 60
     salt = cfg["salt"]
+    subj = cfg.get("active_subject", "")
     current_slot = int(time.time() // validity_seconds)
-    raw_string = f"{SECRET_KEY}_{current_slot}_{salt}"
+    raw_string = f"{SECRET_KEY}_{current_slot}_{salt}_{subj}"
     return hashlib.md5(raw_string.encode()).hexdigest()[:8]
 
 def verify_token(scanned_token):
     cfg = get_shared_qr_config()
     
     if cfg["is_locked"]:
-        return False, "🔒 Attendance session has been locked by the teacher."
+        return False, "🔒 Attendance session has been locked by the teacher.", None
         
     if not scanned_token:
-        return False, "🚨 No attendance token provided."
+        return False, "🚨 No attendance token provided.", None
 
     validity_seconds = cfg["validity_mins"] * 60
     salt = cfg["salt"]
+    subj = cfg.get("active_subject", "")
     current_slot = int(time.time() // validity_seconds)
     
     valid_tokens = [
-        hashlib.md5(f"{SECRET_KEY}_{current_slot}_{salt}".encode()).hexdigest()[:8],
-        hashlib.md5(f"{SECRET_KEY}_{current_slot - 1}_{salt}".encode()).hexdigest()[:8]
+        hashlib.md5(f"{SECRET_KEY}_{current_slot}_{salt}_{subj}".encode()).hexdigest()[:8],
+        hashlib.md5(f"{SECRET_KEY}_{current_slot - 1}_{salt}_{subj}".encode()).hexdigest()[:8]
     ]
     
     if scanned_token in valid_tokens:
-        return True, "✅ QR Session Verified!"
-    return False, "🚨 EXPIRED OR INVALID QR CODE! Scan the active code on the classroom board."
+        return True, f"✅ QR Session Verified for {subj}!", subj
+    return False, "🚨 EXPIRED OR INVALID QR CODE! Scan the active code on the classroom board.", None
 
 def get_public_url():
     try:
@@ -242,15 +245,16 @@ else:
         if menu == "📱 Mark Attendance (QR)":
             st.subheader("Mark Daily Class Attendance")
 
-            is_valid, msg = verify_token(url_token)
+            is_valid, msg, active_subject = verify_token(url_token)
 
             if not is_valid:
                 st.error(msg)
             else:
-                st.success("✅ QR Session Active & Verified!")
+                st.success(f"✅ Verified Active Session for: **{active_subject}**")
                 
                 with st.form("student_mark_form"):
-                    selected_subject = st.selectbox("Select Subject:", SUBJECTS)
+                    # Locked Subject Field (Cannot be modified by student)
+                    st.text_input("Active Lecture Subject:", value=active_subject, disabled=True)
                     submit = st.form_submit_button("✅ Submit Attendance")
 
                 if submit:
@@ -258,7 +262,7 @@ else:
                     today = now_ist.strftime("%Y-%m-%d")
                     current_time = now_ist.strftime("%H:%M:%S")
 
-                    df_att = load_subject_attendance(selected_subject)
+                    df_att = load_subject_attendance(active_subject)
 
                     existing = df_att[
                         (df_att['Date'] == today) & 
@@ -266,7 +270,7 @@ else:
                     ]
 
                     if not existing.empty:
-                        st.warning(f"⚠️ You have already marked attendance for '{selected_subject}' today!")
+                        st.warning(f"⚠️ You have already marked attendance for '{active_subject}' today!")
                     else:
                         new_entry = pd.DataFrame([{
                             "Date": today,
@@ -275,8 +279,8 @@ else:
                             "Name": st.session_state['student_name'],
                             "Status": "Present"
                         }])
-                        append_subject_attendance(selected_subject, new_entry)
-                        st.success(f"🎉 Marked Present for {selected_subject} at {current_time} (IST)!")
+                        append_subject_attendance(active_subject, new_entry)
+                        st.success(f"🎉 Marked Present for {active_subject} at {current_time} (IST)!")
                         st.balloons()
 
         elif menu == "📊 My Monthly Attendance %":
@@ -334,6 +338,21 @@ else:
             st.subheader("📺 Classroom Projector Display")
             
             cfg = get_shared_qr_config()
+
+            # --- TEACHER SUBJECT & SESSION CONTROLS ---
+            current_subj = cfg.get("active_subject", SUBJECTS[0])
+            selected_subject = st.selectbox(
+                "📚 Select Current Subject for this Lecture:", 
+                SUBJECTS, 
+                index=SUBJECTS.index(current_subj) if current_subj in SUBJECTS else 0
+            )
+            
+            if selected_subject != current_subj:
+                cfg["active_subject"] = selected_subject
+                cfg["salt"] += 1  # Generate a new token when subject changes
+                st.rerun()
+
+            st.write("---")
 
             ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
             with ctrl_col1:
@@ -393,10 +412,11 @@ else:
                 with col2:
                     st.markdown(f"""
                     ### ⏱️ Active Timed Session
+                    * **Active Subject:** `{cfg['active_subject']}`
                     * **QR Expiry Window:** `{cfg['validity_mins']} Minutes`
                     * **Time Remaining for Current QR:** `{mins_left}m {secs_left}s`
                     * **Active Link:** `{dynamic_url}`
-                    * **Anti-Proxy Rule:** Clicking **Force Refresh** or **Lock Session** invalidates shared screenshots instantly.
+                    * **Anti-Proxy Rule:** The QR token is cryptographically bound to **{cfg['active_subject']}**. Students cannot choose a different subject.
                     """)
 
         elif t_menu == "📊 Subject Reports & Defaulters":
