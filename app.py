@@ -192,8 +192,17 @@ if "logged_in" not in st.session_state:
     st.session_state["student_roll"] = None
     st.session_state["student_name"] = None
 
-st.title("🎓 Smart Attendance Portal")
-col_logo, col_title = st.columns([1, 5])
+# --- BRANDED HEADER SECTION ---
+col_logo, col_title = st.columns([1, 5], vertical_alignment="center")
+
+with col_logo:
+    st.image("logo.png", width=110)
+
+with col_title:
+    st.markdown("# **V.G. Vaze (Kelkar) College**")
+    st.markdown("### *Smart Attendance Portal*")
+
+st.divider()
 
 with col_logo:
     import os
