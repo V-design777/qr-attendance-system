@@ -12,7 +12,11 @@ from streamlit_gsheets import GSheetsConnection
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Attendance Portal", page_icon="🎓", layout="wide")
+st.set_page_config(
+    page_title="V.G. Vaze (Kelkar) College Attendance Portal",
+    page_icon="logo.png",
+    layout="wide"
+)
 
 SECRET_KEY = "my_college_secure_salt"
 TEACHER_PASSWORD = "admin123"
@@ -189,7 +193,14 @@ if "logged_in" not in st.session_state:
     st.session_state["student_name"] = None
 
 st.title("🎓 Smart Attendance Portal")
-url_token = st.query_params.get("token", None)
+col_logo, col_title = st.columns([1, 5])
+
+with col_logo:
+    st.image("logo.png", width=90)
+
+with col_title:
+    st.title("V.G. Vaze (Kelkar) College")
+    st.caption("Smart Attendance Portal")
 
 # --- 1. LOGIN SCREEN ---
 if not st.session_state["logged_in"]:
