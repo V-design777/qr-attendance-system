@@ -196,7 +196,12 @@ st.title("🎓 Smart Attendance Portal")
 col_logo, col_title = st.columns([1, 5])
 
 with col_logo:
+    import os
+
+if os.path.exists("logo.png"):
     st.image("logo.png", width=90)
+else:
+    st.write("🏫") # Shows a college icon if logo.png is not found
 
 with col_title:
     st.title("V.G. Vaze (Kelkar) College")
