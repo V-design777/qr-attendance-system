@@ -14,7 +14,7 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="V.G. Vaze (Kelkar) College Attendance Portal",
-    page_icon="logo.png",
+    page_icon="logo.png" if os.path.exists("logo.png") else "🎓",
     layout="wide"
 )
 
@@ -41,7 +41,7 @@ def get_shared_qr_config():
         "salt": 1000,
         "validity_mins": 10,
         "is_locked": False,
-        "active_subject": SUBJECTS[0]  # Default subject
+        "active_subject": SUBJECTS[0]
     }
 
 # --- GOOGLE SHEETS & DATA HANDLING ---
@@ -185,6 +185,21 @@ def get_public_url():
         pass
     return "http://localhost:8501"
 
+# --- SINGLE BRANDED HEADER (Renders exactly once at top) ---
+col_logo, col_title = st.columns([1, 5], vertical_alignment="center")
+
+with col_logo:
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=100)
+    else:
+        st.image("https://vazecollege.net/wp-content/uploads/2021/04/logo.png", width=100)
+
+with col_title:
+    st.markdown("## **V.G. Vaze (Kelkar) College**")
+    st.caption("Smart Attendance Management System")
+
+st.divider()
+
 # --- SESSION STATE ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -192,29 +207,7 @@ if "logged_in" not in st.session_state:
     st.session_state["student_roll"] = None
     st.session_state["student_name"] = None
 
-# --- BRANDED HEADER SECTION ---
-col_logo, col_title = st.columns([1, 5], vertical_alignment="center")
-
-with col_logo:
-    st.image("logo.png", width=110)
-
-with col_title:
-    st.markdown("# **V.G. Vaze (Kelkar) College**")
-    st.markdown("### *Smart Attendance Portal*")
-
-st.divider()
-
-with col_logo:
-    import os
-
-if os.path.exists("logo.png"):
-    st.image("logo.png", width=90)
-else:
-    st.write("🏫") # Shows a college icon if logo.png is not found
-
-with col_title:
-    st.title("V.G. Vaze (Kelkar) College")
-    st.caption("Smart Attendance Portal")
+url_token = st.query_params.get("token", None)
 
 # --- 1. LOGIN SCREEN ---
 if not st.session_state["logged_in"]:
@@ -278,7 +271,6 @@ else:
                 st.success(f"✅ Verified Active Session for: **{active_subject}**")
                 
                 with st.form("student_mark_form"):
-                    # Locked Subject Field (Cannot be modified by student)
                     st.text_input("Active Lecture Subject:", value=active_subject, disabled=True)
                     submit = st.form_submit_button("✅ Submit Attendance")
 
@@ -364,7 +356,6 @@ else:
             
             cfg = get_shared_qr_config()
 
-            # --- TEACHER SUBJECT & SESSION CONTROLS ---
             current_subj = cfg.get("active_subject", SUBJECTS[0])
             selected_subject = st.selectbox(
                 "📚 Select Current Subject for this Lecture:", 
@@ -374,7 +365,7 @@ else:
             
             if selected_subject != current_subj:
                 cfg["active_subject"] = selected_subject
-                cfg["salt"] += 1  # Generate a new token when subject changes
+                cfg["salt"] += 1
                 st.rerun()
 
             st.write("---")
