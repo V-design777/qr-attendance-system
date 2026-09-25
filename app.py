@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # --- COOKIE MANAGER INITIALIZATION ---
-cookie_manager = stx.get_cookie_manager(key="vaze_cookie_mgr")
+cookie_manager = stx.CookieManager()
 
 SECRET_KEY = "my_college_secure_salt"
 TEACHER_PASSWORD = "admin123"
