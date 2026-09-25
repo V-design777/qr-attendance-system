@@ -7,7 +7,6 @@ import os
 from datetime import datetime
 import zoneinfo
 from streamlit_gsheets import GSheetsConnection
-import extra_streamlit_components as stx
 
 # --- TIMEZONE CONFIGURATION (IST) ---
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -18,9 +17,6 @@ st.set_page_config(
     page_icon="logo.png" if os.path.exists("logo.png") else "🎓",
     layout="wide"
 )
-
-# --- COOKIE MANAGER INITIALIZATION ---
-cookie_manager = stx.CookieManager()
 
 SECRET_KEY = "my_college_secure_salt"
 TEACHER_PASSWORD = "admin123"
@@ -71,25 +67,33 @@ def sanitize_filename(name):
     return "".join([c if c.isalnum() else "_" for c in name])
 
 def load_students():
-    """Loads student list from Google Sheets or local fallback"""
+    """Loads student list from Google Sheets or local fallback with PIN support"""
+    df = pd.DataFrame()
     if conn_gsheets:
         try:
             df = conn_gsheets.read(worksheet="Students", ttl=0)
-            if not df.empty and 'RollNo' in df.columns:
-                df['RollNo'] = df['RollNo'].astype(str)
-                return df
         except Exception:
             pass
     
-    if os.path.exists("students.csv"):
+    if df.empty and os.path.exists("students.csv"):
         df = pd.read_csv("students.csv")
+        
+    if df.empty:
+        df = pd.DataFrame([{"RollNo": "101", "Name": "Aarav Sharma", "PIN": "1234"}])
+
+    if 'RollNo' in df.columns:
         df['RollNo'] = df['RollNo'].astype(str)
-        return df
-    return pd.DataFrame([{"RollNo": "101", "Name": "Aarav Sharma"}])
+    if 'PIN' not in df.columns:
+        df['PIN'] = "1234"
+    else:
+        df['PIN'] = df['PIN'].astype(str).str.replace(".0", "", regex=False)
+
+    return df
 
 def save_students(df_new):
     """Saves student list permanently to Google Sheets and local backup"""
     df_new['RollNo'] = df_new['RollNo'].astype(str)
+    df_new['PIN'] = df_new['PIN'].astype(str)
     df_new.to_csv("students.csv", index=False)
     if conn_gsheets:
         try:
@@ -275,57 +279,50 @@ if not st.session_state["logged_in"]:
         df_students = load_students()
         roll_list = df_students["RollNo"].unique().tolist()
         
-        # Read saved roll number from browser cookie
-        bound_roll = cookie_manager.get(cookie="vaze_bound_roll")
-
-        # Auto-validate: If bound roll number no longer exists in roster, clear cookie
-        if bound_roll and str(bound_roll) not in roll_list:
-            st.warning("⚠️ Your registered Roll Number is no longer in the active roster. Please select your new Roll Number.")
-            cookie_manager.delete("vaze_bound_roll", key="del_invalid_cookie")
-            bound_roll = None
-
-        if bound_roll:
-            # Device locked to a valid roll number
-            student_info = df_students[df_students["RollNo"] == str(bound_roll)]
-            student_name = student_info.iloc[0]['Name'] if not student_info.empty else "Student"
+        selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
+        student_info = df_students[df_students["RollNo"] == str(selected_roll)]
+        
+        if not student_info.empty:
+            student_name = student_info.iloc[0]['Name']
+            stored_pin = str(student_info.iloc[0]['PIN'])
             
-            st.info(f"📱 **Registered Device** | Roll No: **{bound_roll}** ({student_name})")
+            st.info(f"Student Name: **{student_name}**")
             
-            col_login, col_reset = st.columns([3, 1])
-            with col_login:
-                if st.button("Log In to Portal", use_container_width=True):
-                    st.session_state["logged_in"] = True
-                    st.session_state["role"] = "Student"
-                    st.session_state["student_roll"] = str(bound_roll)
-                    st.session_state["student_name"] = student_name
-                    st.rerun()
-            
-            with col_reset:
-                if st.button("🔄 Change Roll No"):
-                    cookie_manager.delete("vaze_bound_roll", key="reset_user_cookie")
-                    st.success("Device unlinked! Refreshing...")
-                    time.sleep(1)
-                    st.rerun()
-
-        else:
-            # First-time login or recently reset device
-            st.warning("⚠️ **Device Lock**: The roll number you select will be locked to this device.")
-            selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
-            student_info = df_students[df_students["RollNo"] == str(selected_roll)]
-            
-            if not student_info.empty:
-                st.info(f"Selected: **{student_info.iloc[0]['Name']}**")
-
-            if st.button("Register & Log In on This Device"):
-                # Store roll number cookie for 180 days
-                cookie_manager.set("vaze_bound_roll", str(selected_roll), key="save_roll_cookie", max_age=180*24*3600)
+            # Default PIN handling (First-time PIN creation)
+            if stored_pin == "1234":
+                st.warning("⚠️ **First-Time Setup**: Your PIN is set to default (`1234`). Please create a new secret 4-digit PIN below.")
+                new_pin = st.text_input("Create Secret 4-Digit PIN:", type="password", max_chars=4)
+                confirm_pin = st.text_input("Confirm Secret 4-Digit PIN:", type="password", max_chars=4)
                 
-                st.session_state["logged_in"] = True
-                st.session_state["role"] = "Student"
-                st.session_state["student_roll"] = str(selected_roll)
-                st.session_state["student_name"] = student_info.iloc[0]['Name'] if not student_info.empty else "Student"
-                st.success(f"Device locked to Roll No {selected_roll}!")
-                st.rerun()
+                if st.button("Set PIN & Log In"):
+                    if len(new_pin) == 4 and new_pin.isdigit():
+                        if new_pin == confirm_pin:
+                            df_students.loc[df_students["RollNo"] == str(selected_roll), "PIN"] = new_pin
+                            save_students(df_students)
+                            
+                            st.session_state["logged_in"] = True
+                            st.session_state["role"] = "Student"
+                            st.session_state["student_roll"] = str(selected_roll)
+                            st.session_state["student_name"] = student_name
+                            st.success("🎉 Secret PIN set successfully!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("🚨 PINs do not match!")
+                    else:
+                        st.error("🚨 PIN must be exactly 4 numeric digits!")
+            else:
+                # Regular Login with Secret PIN
+                entered_pin = st.text_input("Enter Your 4-Digit Secret PIN:", type="password", max_chars=4)
+                if st.button("Log In as Student"):
+                    if entered_pin == stored_pin:
+                        st.session_state["logged_in"] = True
+                        st.session_state["role"] = "Student"
+                        st.session_state["student_roll"] = str(selected_roll)
+                        st.session_state["student_name"] = student_name
+                        st.rerun()
+                    else:
+                        st.error("🚨 Incorrect PIN! Access Denied.")
 
     elif role == "Teacher":
         password = st.text_input("Enter Teacher Password:", type="password")
@@ -443,6 +440,7 @@ else:
         t_menu = st.sidebar.radio("Teacher Menu", [
             "📺 Classroom Projector (Live QR)", 
             "📊 Subject Reports & Defaulters",
+            "🔑 Manage Student PINs",
             "📁 Upload Student Roster"
         ])
 
@@ -618,6 +616,23 @@ else:
                     time.sleep(1.5)
                     st.rerun()
 
+        elif t_menu == "🔑 Manage Student PINs":
+            st.subheader("🔑 Teacher Control: Reset Student PINs")
+            st.caption("Use this panel to reset a student's PIN if they forget it or change their roll number.")
+            
+            df_curr_students = load_students()
+            st.dataframe(df_curr_students[['RollNo', 'Name', 'PIN']], use_container_width=True)
+            
+            st.write("---")
+            target_roll = st.selectbox("Select Student Roll Number to Reset:", df_curr_students["RollNo"].unique().tolist())
+            
+            if st.button(f"🔄 Reset PIN for Roll No {target_roll} to '1234'"):
+                df_curr_students.loc[df_curr_students["RollNo"] == str(target_roll), "PIN"] = "1234"
+                save_students(df_curr_students)
+                st.success(f"🎉 PIN for Roll No {target_roll} successfully reset to default ('1234')!")
+                time.sleep(1)
+                st.rerun()
+
         elif t_menu == "📁 Upload Student Roster":
             st.subheader("📁 Upload Student List (CSV or Excel)")
             st.caption("Upload an `.xlsx` or `.csv` file containing student roll numbers and names.")
@@ -649,7 +664,12 @@ else:
                         st.info("Please ensure your file has columns named 'RollNo' and 'Name'.")
                     else:
                         new_df['RollNo'] = new_df['RollNo'].astype(str)
-                        new_df = new_df[['RollNo', 'Name']].dropna()
+                        if 'PIN' not in new_df.columns:
+                            new_df['PIN'] = "1234"
+                        else:
+                            new_df['PIN'] = new_df['PIN'].astype(str)
+                            
+                        new_df = new_df[['RollNo', 'Name', 'PIN']].dropna()
                         
                         st.write("### Preview of Uploaded Roster:")
                         st.dataframe(new_df, use_container_width=True)
@@ -666,4 +686,4 @@ else:
             st.write("---")
             st.subheader("📋 Currently Active Student Roster")
             df_curr = load_students()
-            st.dataframe(df_curr, use_container_width=True)
+            st.dataframe(df_curr[['RollNo', 'Name', 'PIN']], use_container_width=True)
