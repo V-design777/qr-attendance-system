@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import zoneinfo
 from streamlit_gsheets import GSheetsConnection
+import extra_streamlit_components as stx
 
 # --- TIMEZONE CONFIGURATION (IST) ---
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -17,6 +18,9 @@ st.set_page_config(
     page_icon="logo.png" if os.path.exists("logo.png") else "🎓",
     layout="wide"
 )
+
+# --- COOKIE MANAGER INITIALIZATION ---
+cookie_manager = stx.get_cookie_manager(key="vaze_cookie_mgr")
 
 SECRET_KEY = "my_college_secure_salt"
 TEACHER_PASSWORD = "admin123"
@@ -96,7 +100,6 @@ def save_students(df_new):
 
 def load_subject_attendance(subject_name):
     """Loads attendance for a specific subject from Supabase or Google Sheets"""
-    # Try fetching high-speed data directly from Supabase first
     if conn_db:
         try:
             query = "SELECT date, time, roll_no AS \"RollNo\", name AS \"Name\", 'Present' AS \"Status\" FROM attendance WHERE subject = :subj"
@@ -109,7 +112,6 @@ def load_subject_attendance(subject_name):
         except Exception:
             pass
 
-    # Backup read from Google Sheets
     df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
     if conn_gsheets:
         try:
@@ -132,7 +134,6 @@ def load_subject_attendance(subject_name):
 
 def save_dual_attendance(subject_name, date_str, time_str, roll_no, name):
     """Saves attendance instantly to Supabase PostgreSQL AND Google Sheets as backup"""
-    # 1. Primary Save to Supabase (High Speed, Unlimited Scale)
     if conn_db:
         try:
             insert_query = """
@@ -151,10 +152,9 @@ def save_dual_attendance(subject_name, date_str, time_str, roll_no, name):
                     }
                 )
                 session.commit()
-        except Exception as e:
-            st.warning(f"Supabase sync warning: {e}")
+        except Exception:
+            pass
 
-    # 2. Secondary Save to Google Sheets & Local CSV Backup
     new_row_df = pd.DataFrame([{
         "Date": date_str,
         "Time": time_str,
@@ -185,7 +185,7 @@ def reset_subject_attendance(subject_name):
                 session.execute(st.text("DELETE FROM attendance WHERE subject = :subj"), {"subj": subject_name})
                 session.commit()
         except Exception as e:
-            st.error(f"Error resetting Supabase database: {e}")
+            st.error(f"Error resetting database: {e}")
 
     empty_df = pd.DataFrame(columns=["Date", "Time", "RollNo", "Name", "Status"])
     local_file = f"attendance_{sanitize_filename(subject_name)}.csv"
@@ -242,7 +242,7 @@ def get_public_url():
         pass
     return "http://localhost:8501"
 
-# --- SINGLE BRANDED HEADER ---
+# --- BRANDED HEADER ---
 col_logo, col_title = st.columns([1, 5], vertical_alignment="center")
 
 with col_logo:
@@ -275,18 +275,57 @@ if not st.session_state["logged_in"]:
         df_students = load_students()
         roll_list = df_students["RollNo"].unique().tolist()
         
-        selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
-        student_info = df_students[df_students["RollNo"] == selected_roll]
-        
-        if not student_info.empty:
-            st.info(f"Welcome, **{student_info.iloc[0]['Name']}**")
+        # Read saved roll number from browser cookie
+        bound_roll = cookie_manager.get(cookie="vaze_bound_roll")
 
-        if st.button("Log In as Student"):
-            st.session_state["logged_in"] = True
-            st.session_state["role"] = "Student"
-            st.session_state["student_roll"] = str(selected_roll)
-            st.session_state["student_name"] = student_info.iloc[0]['Name']
-            st.rerun()
+        # Auto-validate: If bound roll number no longer exists in roster, clear cookie
+        if bound_roll and str(bound_roll) not in roll_list:
+            st.warning("⚠️ Your registered Roll Number is no longer in the active roster. Please select your new Roll Number.")
+            cookie_manager.delete("vaze_bound_roll", key="del_invalid_cookie")
+            bound_roll = None
+
+        if bound_roll:
+            # Device locked to a valid roll number
+            student_info = df_students[df_students["RollNo"] == str(bound_roll)]
+            student_name = student_info.iloc[0]['Name'] if not student_info.empty else "Student"
+            
+            st.info(f"📱 **Registered Device** | Roll No: **{bound_roll}** ({student_name})")
+            
+            col_login, col_reset = st.columns([3, 1])
+            with col_login:
+                if st.button("Log In to Portal", use_container_width=True):
+                    st.session_state["logged_in"] = True
+                    st.session_state["role"] = "Student"
+                    st.session_state["student_roll"] = str(bound_roll)
+                    st.session_state["student_name"] = student_name
+                    st.rerun()
+            
+            with col_reset:
+                if st.button("🔄 Change Roll No"):
+                    cookie_manager.delete("vaze_bound_roll", key="reset_user_cookie")
+                    st.success("Device unlinked! Refreshing...")
+                    time.sleep(1)
+                    st.rerun()
+
+        else:
+            # First-time login or recently reset device
+            st.warning("⚠️ **Device Lock**: The roll number you select will be locked to this device.")
+            selected_roll = st.selectbox("Select Your Roll Number:", roll_list)
+            student_info = df_students[df_students["RollNo"] == str(selected_roll)]
+            
+            if not student_info.empty:
+                st.info(f"Selected: **{student_info.iloc[0]['Name']}**")
+
+            if st.button("Register & Log In on This Device"):
+                # Store roll number cookie for 180 days
+                cookie_manager.set("vaze_bound_roll", str(selected_roll), key="save_roll_cookie", max_age=180*24*3600)
+                
+                st.session_state["logged_in"] = True
+                st.session_state["role"] = "Student"
+                st.session_state["student_roll"] = str(selected_roll)
+                st.session_state["student_name"] = student_info.iloc[0]['Name'] if not student_info.empty else "Student"
+                st.success(f"Device locked to Roll No {selected_roll}!")
+                st.rerun()
 
     elif role == "Teacher":
         password = st.text_input("Enter Teacher Password:", type="password")
@@ -570,7 +609,7 @@ else:
 
             st.write("---")
             with st.expander(f"🗑️ Reset / Erase Attendance Data for {selected_subject}"):
-                st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'** from both database and backup files.")
+                st.warning(f"⚠️ **Warning:** This action will permanently delete all logged attendance records for **'{selected_subject}'**.")
                 confirm_reset = st.checkbox(f"I understand that this will erase all attendance data for '{selected_subject}'")
                 
                 if st.button(f"🔥 Reset Attendance Data for {selected_subject}", disabled=not confirm_reset):
